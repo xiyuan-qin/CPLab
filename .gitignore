@@ -1,0 +1,42 @@
+# 提交压缩包
+answer.zip
+*.zip
+
+# 编译产物
+Main
+*.o
+*.obj
+*.exe
+*.out
+*.a
+*.so
+*.dylib
+
+# 调试相关
+*.dSYM/
+*.gch
+*.pch
+core
+vgcore.*
+
+# 测试输出（保留 test/ 里的 sample 输入，但忽略生成的实际输出）
+test/actual_*.txt
+test/*.out
+
+# 编辑器 / IDE
+.vscode/
+.idea/
+*.swp
+*.swo
+*~
+.DS_Store
+Thumbs.db
+
+# 构建目录
+build/
+out/
+cmake-build-*/
+
+# clangd / 编译数据库
+.cache/
+compile_commands.json
