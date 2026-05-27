@@ -20,7 +20,7 @@ constexpr const char* ERR_LEAD_ZERO =
 constexpr const char* ERR_UNRECOG =
     "Unrecognizable characters.";
 
-inline bool is_digit(char c) { return std::isdigit(static_cast<unsigned char>(c)); }
+inline bool is_digit(char c) { return std::isdigit(static_cast<unsigned char>(c)); }    // 把char类型强制转换，多套一层
 inline bool is_alpha(char c) { return std::isalpha(static_cast<unsigned char>(c)); }
 inline bool is_alnum(char c) { return std::isalnum(static_cast<unsigned char>(c)); }
 inline bool is_space(char c) { return std::isspace(static_cast<unsigned char>(c)); }
@@ -63,21 +63,27 @@ LexResult tokenize(const std::string& src) {
             while (i < n && (is_digit(src[i]) || src[i] == '.')) {
                 if (src[i] == '.') ++dots;
                 num += src[i++];
-            }
+            }// 把一个数字完整的读进来，哪怕是1.2.3.4这种违法数字
 
             // 优先级：1 > 2 > 3
-            if (dots >= 2) { set_err(ERR_MULTI_DOT); return res; }
-            if (dots == 1) {
+            if (dots >= 2) { set_err(ERR_MULTI_DOT); return res; }// 多个小数点
+            if (dots == 1) {// 处理小数
+
+                // 小数点在首位或者末尾
                 if (num.front() == '.' || num.back() == '.') {
                     set_err(ERR_DOT_EDGE); return res;
                 }
+
+                // 前导0：小数
                 auto pos = num.find('.');
                 std::string intp = num.substr(0, pos);
-                if (intp.size() > 1 && intp[0] == '0') {
+                if (intp.size() > 1 && intp[0] == '0') {// 00.1这种
                     set_err(ERR_LEAD_ZERO); return res;
                 }
                 res.tokens.push_back({num, "DOUBLE"});
-            } else {
+            } else {// 处理整数
+                
+                // 前导0：整数
                 if (num.size() > 1 && num[0] == '0') {
                     set_err(ERR_LEAD_ZERO); return res;
                 }
@@ -89,20 +95,22 @@ LexResult tokenize(const std::string& src) {
         // 5. 标识符 / 关键字
         if (is_alpha(c)) {
             std::string w;
-            while (i < n && is_alnum(src[i])) w += src[i++];
-            if (auto it = KEYWORDS.find(w); it != KEYWORDS.end())
-                res.tokens.push_back({w, it->second});
+            while (i < n && is_alnum(src[i])) w += src[i++]; // 提取关键字/标识符
+            if (auto it = KEYWORDS.find(w); it != KEYWORDS.end())// 判断是否是关键字
+                res.tokens.push_back({w, it->second}); // 在keywords找到了，属于关键字
             else
                 res.tokens.push_back({w, "IDENT"});
             continue;
         }
 
+
+        // 都不是
         // 6. 运算符 / 界符
         auto push2 = [&](const char* op, const char* ty) {
             res.tokens.push_back({op, ty}); i += 2;
         };
         auto push1 = [&](char op, const char* ty) {
-            res.tokens.push_back({std::string(1, op), ty}); ++i;
+            res.tokens.push_back({std::string(1, op)/*构造一个单字string，因为lexeme是string不是char*/, ty}); ++i;
         };
 
         switch (c) {
@@ -130,14 +138,14 @@ LexResult tokenize(const std::string& src) {
                 if (i + 1 < n && src[i + 1] == '&') push2("&&", "LO");
                 else { set_err(ERR_UNRECOG); return res; }   // 单独的 & 是错误4
                 break;
-            case '+': push1('+', "PLUS");      break;
-            case '-': push1('-', "MINUS");     break;
-            case '*': push1('*', "TIMES");     break;
-            case '/': push1('/', "DIVISION");  break;   // 注释在前面已处理掉
-            case ',': push1(',', "COMMA");     break;
+            case '+':   push1('+', "PLUS");      break;
+            case '-':   push1('-', "MINUS");     break;
+            case '*':   push1('*', "TIMES");     break;
+            case '/':   push1('/', "DIVISION");  break;   // 注释在前面已处理掉
+            case ',':   push1(',', "COMMA");     break;
             case '(': case ')': case '{': case '}':
-                      push1(c,   "BRACE");     break;
-            case ';': push1(';', "SEMICOLON"); break;
+                        push1(c,   "BRACE");     break;
+            case ';':   push1(';', "SEMICOLON"); break;
             default:
                 set_err(ERR_UNRECOG); return res;
         }
