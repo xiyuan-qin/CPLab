@@ -40,3 +40,5 @@ cmake-build-*/
 # clangd / 编译数据库
 .cache/
 compile_commands.json
+
+answer/

@@ -15,8 +15,8 @@ int main() {
         std::cout << res.error << '\n';
         return 0;
     }
-    for (const auto& [lex, ty] : res.tokens) {
-        std::cout << lex << ' ' << ty << '\n';
+    for (const auto& t : res.tokens) {
+        std::cout << t.lexeme << ' ' << t.type << '\n';
     }
     return 0;
 }
