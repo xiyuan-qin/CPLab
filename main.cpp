@@ -10,20 +10,24 @@ int main() {
     std::string src{std::istreambuf_iterator<char>(std::cin),
                     std::istreambuf_iterator<char>()};
 
-    auto lex_res = tokenize(src);
-    if (!lex_res.error.empty()) {
-        // 实验二保证无词法错，但保险起见
-        std::cout << "Syntax Error";
-        return 0;
-    }
+    auto lex = tokenize(src);
+    if (!lex.error.empty()) { std::cout << "Syntax Error"; return 0; }
 
-    auto par_res = parse(lex_res.tokens);
-    if (!par_res.ok) {
-        std::cout << "Syntax Error";   // 注意无换行
-        return 0;
-    }
+    auto par = parse(lex.tokens);
+    if (!par.ok) { std::cout << "Syntax Error"; return 0; }   // 无换行
 
-    // 阶段 C：成功就先打印一行占位
-    std::cout << "ACC\n";
+    // 符号表
+    std::cout << par.symbols.size() << '\n';
+    for (const auto& sym : par.symbols)
+        std::cout << sym.name << ' ' << sym.type << " null " << sym.offset << '\n';
+    // 临时变量数
+    std::cout << par.temp_count << '\n';
+    // 四元式
+    std::cout << par.quads.size() << '\n';
+    for (size_t i = 0; i < par.quads.size(); ++i) {
+        const auto& q = par.quads[i];
+        std::cout << i << ": (" << q.op << ',' << q.arg1 << ','
+                    << q.arg2 << ',' << q.result << ")\n";
+    }
     return 0;
 }
