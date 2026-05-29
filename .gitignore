@@ -42,3 +42,4 @@ cmake-build-*/
 compile_commands.json
 
 answer/
+test/
