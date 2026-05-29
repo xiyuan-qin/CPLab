@@ -66,7 +66,7 @@ const std::vector<std::pair<Sym, std::vector<Sym>>> RAW_PRODS = {
     {N_BANDTERM,    {N_BFACTOR}},
     {N_BFACTOR,     {T_UINT}},
     {N_BFACTOR,     {T_UFLOAT}},
-    {N_BFACTOR,     {T_ID}},
+    {N_BFACTOR,     {N_ID}},
 
     // 运算符
     {N_PLUS_MINUS,  {T_PLUS}},

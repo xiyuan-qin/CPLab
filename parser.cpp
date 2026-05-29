@@ -1,6 +1,7 @@
 #include "parser.h"
 #include "grammar.h"
 #include "lr1.h"
+#include <iostream>
 #include <string>
 
 namespace {
@@ -186,6 +187,85 @@ Attr dispatch(int prod_id, std::vector<Attr>& rhs, Semantic& sem) {
 
         // 阶段 E 再填：while / if / L 回填 / B 布尔表达式
         // case 17,18,20,39..49
+        // ===== STATEMENT 控制流 =====
+        case 17: // STATEMENT -> while N1 B do N2 STATEMENT1
+            // backpatch(STATEMENT1.nextlist, N1.quad)
+            sem.backpatch(rhs[5].nextlist, rhs[1].quad);
+            // backpatch(B.truelist, N2.quad)
+            sem.backpatch(rhs[2].truelist, rhs[4].quad);
+            // STATEMENT.nextlist = B.falselist
+            act.nextlist = rhs[2].falselist;
+            // gen(j,-,-,N1.quad)
+            sem.gen("j", "-", "-", std::to_string(rhs[1].quad));
+            break;
+        case 18: // STATEMENT -> if B then N STATEMENT1
+            sem.backpatch(rhs[1].truelist, rhs[3].quad);
+            act.nextlist = merge(rhs[1].falselist, rhs[4].nextlist);
+            break;
+        case 20: // L -> L1 ; N STATEMENT
+            sem.backpatch(rhs[0].nextlist, rhs[2].quad);
+            act.nextlist = rhs[3].nextlist;
+            break;
+
+        // ===== 布尔表达式 B =====
+        case 39: // B -> B1 || N BORTERM
+            sem.backpatch(rhs[0].falselist, rhs[2].quad);
+            act.truelist  = merge(rhs[0].truelist, rhs[3].truelist);
+            act.falselist = rhs[3].falselist;
+            break;
+        case 40: // B -> BORTERM
+            act.truelist  = rhs[0].truelist;
+            act.falselist = rhs[0].falselist;
+            break;
+        case 41: // BORTERM -> BORTERM1 && N BANDTERM
+            sem.backpatch(rhs[0].truelist, rhs[2].quad);
+            act.falselist = merge(rhs[0].falselist, rhs[3].falselist);
+            act.truelist  = rhs[3].truelist;
+            break;
+        case 42: // BORTERM -> BANDTERM
+            act.truelist  = rhs[0].truelist;
+            act.falselist = rhs[0].falselist;
+            break;
+        case 43: // BANDTERM -> ( B )
+            act.truelist  = rhs[1].truelist;
+            act.falselist = rhs[1].falselist;
+            break;
+        case 44: // BANDTERM -> ! BANDTERM1
+            act.truelist  = rhs[1].falselist;
+            act.falselist = rhs[1].truelist;
+            break;
+        case 45: // BANDTERM -> BFACTOR REL BFACTOR
+            act.truelist  = mklist(sem.nextquad());
+            act.falselist = mklist(sem.nextquad() + 1);
+            sem.gen("j" + rhs[1].op, rhs[0].place, rhs[2].place, "0");
+            sem.gen("j", "-", "-", "0");
+            break;
+        case 46: // BANDTERM -> BFACTOR
+            act.truelist  = mklist(sem.nextquad());
+            act.falselist = mklist(sem.nextquad() + 1);
+            sem.gen("jnz", rhs[0].place, "-", "0");
+            sem.gen("j", "-", "-", "0");
+            break;
+
+        // ===== 布尔因子 BFACTOR =====
+        case 47: // BFACTOR -> UINT
+            act.place = sem.newtemp(TYPE_INT); act.type = TYPE_INT;
+            sem.gen("=", rhs[0].lexeme, "-", act.place);
+            break;
+        case 48: // BFACTOR -> UFLOAT
+            act.place = sem.newtemp(TYPE_DOUBLE); act.type = TYPE_DOUBLE;
+            sem.gen("=", rhs[0].lexeme, "-", act.place);
+            break;
+        case 49:
+        {
+            std::string p = sem.lookup(rhs[0].name, true);
+            if (p.empty()) {
+                sem.error = true;
+            }
+            act.place = p;
+            act.type  = sem.lookup_type(rhs[0].name);
+            break;
+        }
 
         default:
             break;
@@ -227,11 +307,15 @@ ParseResult parse(const std::vector<Token>& tokens) {
                 state_stack.pop_back();
             }
             Attr lhs = dispatch(act.value, rhs, sem);
-            if (sem.error) return {false, "Syntax Error", {}, {}, 0};
+            if (sem.error) {
+                return {false, "Syntax Error", {}, {}, 0};
+            }
 
             int s2 = state_stack.back();
             int go = T.go[s2][p.lhs - grammar::NUM_TERMS];
-            if (go < 0) return {false, "Syntax Error", {}, {}, 0};
+            if (go < 0) {
+                return {false, "Syntax Error", {}, {}, 0};
+            }
             state_stack.push_back(go);
             attr_stack.push_back(lhs);
         } else if (act.type == lr1::ACT_ACCEPT) {
