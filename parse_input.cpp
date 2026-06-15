@@ -1,69 +1,59 @@
-#include "ir.h"
 #include "parse_input.h"
+#include <iostream>
 #include <sstream>
-#include <vector>
+#include <algorithm>
+#include <cstdlib>
 
-namespace {
-// 拆 "(op,arg1,arg2,result)" 里的四个字段
-std::vector<std::string> split_quad(const std::string& body) {
-    std::vector<std::string> parts;
-    std::string cur;
-    for (char c : body) {
-        if (c == ',') { parts.push_back(cur); cur.clear(); }
-        else cur += c;
-    }
-    parts.push_back(cur);
-    return parts;
-}
-}
-
-Program parse_input(const std::string& text) {
-    Program prog;
-    std::istringstream in(text);
+// 读入符号表
+static void getInputForSymbolTable(State& st, int len, std::istream& in) {
     std::string line;
-
-    // 第一行：符号表项数
-    std::getline(in, line);
-    int n = std::stoi(line);
-
-    // 符号表 n 行：name type value offset
-    int total_width = 0;
-    for (int i = 0; i < n; ++i) {
+    for (int i = 0; i < len; ++i) {
         std::getline(in, line);
-        std::istringstream ls(line);
-        Symbol s;
-        std::string value;
-        ls >> s.name >> s.type >> value >> s.offset;
-        prog.sym_index[s.name] = (int)prog.symbols.size();
-        // 同时建立 TBi -> 符号表 的映射：第 i 个变量就是 TB i
-        prog.sym_index["TB" + std::to_string(i)] = (int)prog.symbols.size();
-        prog.symbols.push_back(s);
-        int w = (s.type == 0 ? 4 : 8);
-        total_width = s.offset + w;   // 最后一个变量 offset+width = 总宽度
+        std::istringstream ss(line);
+        SymItem item;
+        item.isTemp = false;                 // 符号表登记项是非临时变量
+        ss >> item.name >> item.type >> item.value >> item.offset;
+        st.InitOffset = std::max(st.InitOffset, item.offset);
+        st.symbolTable["TB" + std::to_string(i)] = item;
     }
-    prog.next_temp_offset = total_width;
+}
 
-    // 临时变量个数
-    std::getline(in, line);
-    prog.temp_count = std::stoi(line);
-
-    // 四元式个数
-    std::getline(in, line);
-    int m = std::stoi(line);
-
-    // m 条四元式："idx: (op,a1,a2,res)"
-    for (int i = 0; i < m; ++i) {
+// 读入四元式序列
+static void getInputForQuardruples(State& st, int len, std::istream& in) {
+    st.quads.resize(len);
+    std::string line;
+    for (int i = 0; i < len; ++i) {
         std::getline(in, line);
-        auto lp = line.find('(');
-        auto rp = line.rfind(')');
-        std::string body = line.substr(lp + 1, rp - lp - 1);
-        auto parts = split_quad(body);
-        Quad q;
-        q.op     = parts[0];
-        q.arg1   = parts.size() > 1 ? parts[1] : "-";
-        q.arg2   = parts.size() > 2 ? parts[2] : "-";
-        q.result = parts.size() > 3 ? parts[3] : "-";
-        prog.quads.push_back(q);
+        // 形如 "idx: (op,a1,a2,res)"
+        line = line.substr(line.find(':') + 2);     // 去掉 "idx: "
+        line = line.substr(1, line.find(')') - 1);  // 去掉首括号与尾括号
+        std::istringstream ss(line);
+        std::vector<std::string> tokens(4);
+        int j = 0;
+        while (j < 4 && std::getline(ss, tokens[j], ',')) ++j;
+        st.quads[i].op    = tokens[0];
+        st.quads[i].opnd1 = tokens[1];
+        st.quads[i].opnd2 = tokens[2];
+        st.quads[i].left  = tokens[3];
     }
-    return prog;
+}
+
+void input(State& st, std::istream& in) {
+    std::string line;
+    std::getline(in, line);
+    if (line == "Syntax Error") {
+        std::cout << "halt" << std::endl;
+        std::exit(0);
+    }
+    int symbolTableSize = std::stoi(line);
+    getInputForSymbolTable(st, symbolTableSize, in);
+
+    std::getline(in, line);
+    st.tempCount = std::stoi(line);
+
+    std::getline(in, line);
+    int quardruplesSize = std::stoi(line);
+    getInputForQuardruples(st, quardruplesSize, in);
+
+    st.offset = st.InitOffset;   // 临时变量从符号表最大偏移量之后开始分配
 }

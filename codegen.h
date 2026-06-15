@@ -1,6 +1,8 @@
 #pragma once
 #include "ir.h"
-#include "blocks.h"
-#include <string>
-#include <vector>
-std::vector<std::string> generate_code(Program& prog, std::vector<Block>& blocks);
+
+// 生成目标代码（直接输出到 std::cout）。
+void genCode(State& st);
+
+// 完整流程：划分基本块 → 求活跃信息 → 生成代码。
+void run(State& st);

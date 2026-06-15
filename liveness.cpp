@@ -1,59 +1,55 @@
 #include "liveness.h"
 
-namespace {
-// 给某个操作数（变量）取符号表工作字段；临时变量也要进符号表管理
-// 这里用一个临时的 work map 统一处理 TBn 和 Tn_x
-struct Work {
-    std::unordered_map<std::string, UseInfo> tab;
-    UseInfo get(const std::string& v) {
-        auto it = tab.find(v);
-        return it == tab.end() ? UseInfo{} : it->second;
-    }
-    void set(const std::string& v, int use, bool live) {
-        tab[v] = {use, live};
-    }
-};
-
-bool is_temp(const std::string& s) {
-    return s.size() >= 2 && s[0] == 'T' && std::isdigit((unsigned char)s[1]);
-}
-bool is_variable(const std::string& s) {
-    return !s.empty() && s != "-" && s[0] == 'T';   // TBn 或 Tn_x
-}
-}
-
-void compute_liveness(Program& prog, const std::vector<Block>& blocks) {
-    for (const auto& blk : blocks) {
-        Work w;
-        // 初始化：块内出现的变量，出口活跃性按规则设
-        for (int i = blk.start; i <= blk.end; ++i) {
-            const Quad& q = prog.quads[i];
-            for (const std::string* s : {&q.arg1, &q.arg2, &q.result}) {
-                if (is_variable(*s)) {
-                    bool live_out = !is_temp(*s);   // 非临时→出口活跃
-                    w.set(*s, -1, live_out);
-                }
-            }
+// 求解单个基本块的待用/活跃信息，返回出口处的活跃变量集合
+static std::set<std::string> getUseInfo(State& st, const std::vector<int>& block) {
+    std::set<std::string> res;   // 当前块出口处的活跃变量集合
+    // 初始化：use 置为非待用；非临时变量在出口处活跃
+    for (int idx : block) {
+        const std::string& x = st.quads[idx].opnd1.val;
+        const std::string& y = st.quads[idx].opnd2.val;
+        const std::string& z = st.quads[idx].left.val;
+        if (!x.empty() && x[0] == 'T') {
+            st.symbolTable[x].use = -1;
+            if (!st.symbolTable[x].isTemp) { st.symbolTable[x].live = true; res.insert(x); }
         }
-        // 逆序扫描
-        for (int i = blk.end; i >= blk.start; --i) {
-            Quad& q = prog.quads[i];
-            const std::string &x = q.arg1, &y = q.arg2, &z = q.result;
-
-            // 1. z：先把符号表当前状态记到四元式
-            if (is_variable(z)) {
-                q.infoRes = w.get(z);
-                w.set(z, -1, false);    // z 被定值，之前它是死的
-            }
-            // 2. x, y：记状态，再置 use=当前编号, live=Y
-            if (is_variable(x)) {
-                q.info1 = w.get(x);
-                w.set(x, i, true);
-            }
-            if (is_variable(y)) {
-                q.info2 = w.get(y);
-                w.set(y, i, true);
-            }
+        if (!y.empty() && y[0] == 'T') {
+            st.symbolTable[y].use = -1;
+            if (!st.symbolTable[y].isTemp) { st.symbolTable[y].live = true; res.insert(y); }
         }
+        if (!z.empty() && z[0] == 'T') {
+            st.symbolTable[z].use = -1;
+            if (!st.symbolTable[z].isTemp) { st.symbolTable[z].live = true; res.insert(z); }
+        }
+    }
+    // 逆序扫描，回填四元式各项的 use/live
+    for (int i = (int)block.size() - 1; i >= 0; --i) {
+        int index = block[i];
+        Quad& q = st.quads[index];
+        if (!q.left.val.empty() && q.left.val[0] == 'T') {
+            q.left.use  = st.symbolTable[q.left.val].use;
+            q.left.live = st.symbolTable[q.left.val].live;
+            st.symbolTable[q.left.val].live = false;
+            st.symbolTable[q.left.val].use  = -1;
+        }
+        if (!q.opnd1.val.empty() && q.opnd1.val[0] == 'T') {
+            q.opnd1.use  = st.symbolTable[q.opnd1.val].use;
+            q.opnd1.live = st.symbolTable[q.opnd1.val].live;
+            st.symbolTable[q.opnd1.val].live = true;
+            st.symbolTable[q.opnd1.val].use  = index;
+        }
+        if (!q.opnd2.val.empty() && q.opnd2.val[0] == 'T') {
+            q.opnd2.use  = st.symbolTable[q.opnd2.val].use;
+            q.opnd2.live = st.symbolTable[q.opnd2.val].live;
+            st.symbolTable[q.opnd2.val].live = true;
+            st.symbolTable[q.opnd2.val].use  = index;
+        }
+    }
+    return res;
+}
+
+void computeLiveness(State& st) {
+    st.liveOut.resize(st.basicBlocks.size());
+    for (size_t i = 0; i < st.basicBlocks.size(); ++i) {
+        st.liveOut[i] = getUseInfo(st, st.basicBlocks[i]);
     }
 }

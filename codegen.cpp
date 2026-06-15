@@ -1,208 +1,161 @@
 #include "codegen.h"
+#include "blocks.h"
+#include "liveness.h"
 #include "regalloc.h"
-#include <algorithm>
-#include <cctype>
+#include <iostream>
+#include <map>
+#include <string>
 
-namespace {
-
-bool is_variable(const std::string& s) { return !s.empty() && s != "-" && s[0]=='T'; }
-bool is_temp_v(const std::string& s) {
-    return s.size()>=2 && s[0]=='T' && std::isdigit((unsigned char)s[1]);
+// 操作符到目标指令的映射
+static const std::map<std::string, std::string> opMap = {
+    {"+","add"}, {"-","sub"}, {"*","mul"}, {"/","div"}, {"=","mov"},
+    {"<","cmp"}, {">","cmp"}, {"<=","cmp"}, {">=","cmp"}, {"==","cmp"}, {"!=","cmp"},
+    {"&&","and"}, {"||","or"}, {"!","not"},
+};
+static const std::map<std::string, std::string> jThetaMap = {
+    {"j<","jl"}, {"j>","jg"}, {"j<=","jle"}, {"j>=","jge"}, {"j==","je"}, {"j!=","jne"},
+};
+static const std::map<std::string, std::string> cmpMap = {
+    {"<","setl"}, {">","setg"}, {"<=","setle"}, {">=","setge"}, {"==","sete"}, {"!=","setne"},
+};
+static std::string mapGet(const std::map<std::string,std::string>& m, const std::string& k) {
+    auto it = m.find(k);
+    return it == m.end() ? "" : it->second;
 }
 
-// 四元式 op -> set 指令后缀 / 跳转指令
-std::string set_suffix(const std::string& op) {
-    if (op=="==") return "sete";
-    if (op=="!=") return "setne";
-    if (op=="<")  return "setl";
-    if (op=="<=") return "setle";
-    if (op==">")  return "setg";
-    if (op==">=") return "setge";
-    return "";
-}
-std::string jmp_for(const std::string& jop) {
-    // jop 形如 j== j!= j< j<= j> j>= jnz
-    std::string rel = jop.substr(1);
-    if (rel=="==") return "je";
-    if (rel=="!=") return "jne";
-    if (rel=="<")  return "jl";
-    if (rel=="<=") return "jle";
-    if (rel==">")  return "jg";
-    if (rel==">=") return "jge";
-    if (rel=="nz") return "jne";
-    return "jmp";
-}
-std::string arith_instr(const std::string& op) {
-    if (op=="+") return "add";
-    if (op=="-") return "sub";
-    if (op=="*") return "mul";
-    if (op=="/") return "div";
-    if (op=="&&") return "and";
-    if (op=="||") return "or";
-    return "";
-}
-bool is_cond_jump(const std::string& op) {
-    return op.size()>=2 && op[0]=='j' && op!="j";
-}
-bool is_compute(const std::string& op) {
-    // 产生 set 的比较运算 或 算术/逻辑运算
-    return op=="+"||op=="-"||op=="*"||op=="/"||op=="&&"||op=="||"||op=="!"
-        || op=="=="||op=="!="||op=="<"||op=="<="||op==">"||op==">=";
-}
-
-} // namespace
-
-std::vector<std::string> generate_code(Program& prog, std::vector<Block>& blocks) {
-    std::vector<std::string> out;
-    RegAlloc ra(prog, out);
-    std::vector<bool> labelFlag(blocks.size(), false);
-
-    // 块号 -> 块起始四元式编号,用于打标号
-    auto block_of = [&](int quad_idx) { return prog.quads[quad_idx].block; };
-    auto gen_label = [&](int target_quad) {
-        int blk = block_of(target_quad);
-        if (!labelFlag[blk]) {
-            // 标号用目标四元式编号
+// 只有左操作数的四元式：(=,x,-,z) / (!,x,-,z)
+static void genForOnlyX(State& st, int index, int blockIndex) {
+    Quad q = st.quads[index];
+    const std::string& x = q.opnd1.val;
+    const std::string& z = q.left.val;
+    std::string R = getReg(st, index);
+    std::string x1;
+    if (isUNum(x)) {
+        x1 = x;
+        std::cout << "mov " << R << ", " << x1 << "\n";
+    } else {
+        if (st.Rval[R].find(x) == st.Rval[R].end()) {       // x∉Rval(R) 才装载
+            if (!st.Aval[x].reg.empty()) x1 = *st.Aval[x].reg.begin();
+            else x1 = getAddress(st, x);
+            std::cout << "mov " << R << ", " << x1 << "\n";
         }
-        // 题目:标号用四元式编号 ?N: 。但要避免重复——按块去重
-        // 这里标号文本用目标 quad 编号
-    };
-
-    // 收集所有跳转目标四元式编号 -> 它们所属的块
-    std::vector<bool> block_is_target(blocks.size(), false);
-    for (const auto& q : prog.quads) {
-        if (q.op == "j" || is_cond_jump(q.op)) {
-            int target = std::stoi(q.result);
-            int blk = prog.quads[target].block;
-            block_is_target[blk] = true;
-        }
+        if (q.op.val != "=") std::cout << mapGet(opMap, q.op.val) << " " << R << "\n";  // not R
+        releaseReg(st, x, st.liveOut[blockIndex]);
     }
+    st.Rval[R].insert(z);
+    st.historyInfo[z] = q.left;
+    st.Aval[z].reg.insert(R);
+    st.Aval[z].mem.clear();
+}
 
-    for (size_t bi = 0; bi < blocks.size(); ++bi) {
-        Block& blk = blocks[bi];
+// 一般运算四元式 (θ,x,y,z)
+static void genForTheta(State& st, int index, int blockIndex) {
+    Quad q = st.quads[index];
+    const std::string& x = q.opnd1.val;
+    const std::string& y = q.opnd2.val;
+    const std::string& z = q.left.val;
+    std::string Rz = getReg(st, index);
 
-        if (block_is_target[bi]) {
-            out.push_back("?" + std::to_string(blk.start) + ":");
-        }
+    std::string x1;
+    if (x != "-" && !isUNum(x)) {
+        if (!st.Aval[x].reg.empty()) x1 = *st.Aval[x].reg.begin();
+        else x1 = getAddress(st, x);
+    } else x1 = x;
 
-        ra.clear_descriptors();
-        ra.block_start = blk.start;
-        ra.block_end   = blk.end;
+    std::string y1;
+    if (y != "-" && !isUNum(y)) {
+        if (!st.Aval[y].reg.empty()) y1 = *st.Aval[y].reg.begin();
+        else y1 = getAddress(st, y);
+    } else y1 = y;
 
-
-        // 若本块是某跳转目标,块首可能要打标号——延后到生成跳转时统一处理
-        // 这里先检查:本块起始四元式是否被标记需要标号(用 labelFlag)
-        // 我们改为:谁跳到这,谁负责打标号(见块尾)。但标号必须出现在目标块之前。
-        // 实现:先扫一遍所有跳转,记录哪些 quad 是目标,需要标号。
-
-        for (int i = blk.start; i <= blk.end; ++i) {
-            Quad& q = prog.quads[i];
-            const std::string& op = q.op;
-
-            if (op == "R") {
-                out.push_back("jmp ?read(" + ra.addr(q.result) + ")");
-            } else if (op == "W") {
-                out.push_back("jmp ?write(" + ra.addr(q.result) + ")");
-            } else if (op == "End") {
-                out.push_back("halt");
-            } else if (op == "=") {
-                // (=,src,-,dest):mov R, src ; R 是新分配给 dest 的寄存器
-                int R = ra.getReg(q, i);
-                std::string srcloc = ra.operand_loc(q.arg1);
-                // 如果 src 已在 R 中则不生成
-                if (!(is_variable(q.arg1) && ra.in_reg(q.arg1) == R)) {
-                    out.push_back("mov " + ra.reg_name(R) + ", " + srcloc);
-                }
-                // 更新描述符:dest 在 R 中
-                ra.Rval[R].clear();
-                ra.Rval[R].insert(q.result);
-                ra.Aval[q.result].regs = {R};
-                ra.Aval[q.result].in_mem = false;
-                ra.releaseReg(q.arg1, {});
-            } else if (op == "!") {
-                int R = ra.getReg(q, i);
-                std::string xloc = ra.operand_loc(q.arg1);
-                if (!(is_variable(q.arg1) && ra.in_reg(q.arg1) == R))
-                    out.push_back("mov " + ra.reg_name(R) + ", " + xloc);
-                out.push_back("not " + ra.reg_name(R));
-                ra.Rval[R].clear(); ra.Rval[R].insert(q.result);
-                ra.Aval[q.result].regs = {R}; ra.Aval[q.result].in_mem = false;
-                ra.releaseReg(q.arg1, {});
-            } else if (is_compute(op) && i != blk.end) {
-                // 块中间的运算四元式(算术/逻辑/比较)
-                int R = ra.getReg(q, i);
-                std::string xloc = ra.operand_loc(q.arg1);
-                std::string yloc = ra.operand_loc(q.arg2);
-                int rx = is_variable(q.arg1) ? ra.in_reg(q.arg1) : -1;
-                if (rx == R) {
-                    // x 已在 R:直接 op R, y
-                    ra.Aval[q.arg1].regs.erase(R);
-                } else {
-                    out.push_back("mov " + ra.reg_name(R) + ", " + xloc);
-                }
-                std::string suf = set_suffix(op);
-                if (!suf.empty()) {
-                    // 比较运算:cmp R, y ; setX R
-                    out.push_back("cmp " + ra.reg_name(R) + ", " + yloc);
-                    out.push_back(suf + " " + ra.reg_name(R));
-                } else {
-                    out.push_back(arith_instr(op) + " " + ra.reg_name(R) + ", " + yloc);
-                }
-                int ry = is_variable(q.arg2) ? ra.in_reg(q.arg2) : -1;
-                if (ry == R) ra.Aval[q.arg2].regs.erase(R);
-                ra.Rval[R].clear(); ra.Rval[R].insert(q.result);
-                ra.Aval[q.result].regs = {R}; ra.Aval[q.result].in_mem = false;
-                ra.releaseReg(q.arg1, {});
-                ra.releaseReg(q.arg2, {});
-            }
-            // 块尾跳转在下面统一处理
-        }
-
-        // === 块尾:写回出口活跃变量(字典序) ===
-        std::vector<std::string> live_vars;
-        for (auto& [var, ad] : ra.Aval) {
-            if (!is_temp_v(var) && !ad.in_mem && !ad.regs.empty())
-                live_vars.push_back(var);
-        }
-        std::sort(live_vars.begin(), live_vars.end());
-        for (auto& var : live_vars) {
-            int r = *ra.Aval[var].regs.begin();
-            out.push_back("mov " + ra.addr(var) + ", " + ra.reg_name(r));
-            ra.Aval[var].in_mem = true;
-        }
-
-        // === 块尾跳转 ===
-        Quad& last = prog.quads[blk.end];
-        if (last.op == "j") {
-            out.push_back("jmp ?" + last.result);
-        } else if (is_cond_jump(last.op)) {
-            // jθ / jnz:已经在循环里没处理(因为 i==blk.end 跳过了 compute)
-            // 这里生成比较+条件跳转
-            std::string xloc = ra.operand_loc(last.arg1);
-            int rx = is_variable(last.arg1) ? ra.in_reg(last.arg1) : -1;
-            std::string Rx;
-            if (rx < 0) {
-                int R = ra.getReg(last, blk.end);
-                out.push_back("mov " + ra.reg_name(R) + ", " + xloc);
-                Rx = ra.reg_name(R);
-            } else {
-                Rx = ra.reg_name(rx);
-            }
-            if (last.op == "jnz") {
-                out.push_back("cmp " + Rx + ", 0");
-                out.push_back("jne ?" + last.result);
-            } else {
-                std::string yloc = ra.operand_loc(last.arg2);
-                out.push_back("cmp " + Rx + ", " + yloc);
-                out.push_back(jmp_for(last.op) + " ?" + last.result);
-            }
-        }
+    std::string opi = mapGet(opMap, q.op.val);
+    if (x1 == Rz) {
+        std::cout << opi << " " << Rz << ", " << y1 << "\n";
+        if (opi == "cmp") std::cout << mapGet(cmpMap, q.op.val) << " " << Rz << "\n";
+        st.Aval[x].reg.erase(Rz);
+    } else {
+        std::cout << "mov " << Rz << ", " << x1 << "\n";
+        std::cout << opi << " " << Rz << ", " << y1 << "\n";
+        if (opi == "cmp") std::cout << mapGet(cmpMap, q.op.val) << " " << Rz << "\n";
     }
+    if (y1 == Rz) {
+        if (!isUNum(y)) st.Aval[y].reg.erase(Rz);
+    }
+    st.Rval[Rz] = {z};
+    st.historyInfo[z] = q.left;
+    st.Aval[z].reg = {Rz};
+    st.Aval[z].mem.clear();
+    if (!isUNum(x)) releaseReg(st, x, st.liveOut[blockIndex]);
+    if (!isUNum(y)) releaseReg(st, y, st.liveOut[blockIndex]);
+}
 
-    // === 插入标号 ===
-    // 收集所有跳转目标 quad 编号,在对应输出位置前插 ?N:
-    // 由于 out 是线性的,需要在生成时记录"每个块第一行的 out 下标"
-    // —— 这部分见下方说明,需要重构为带标号的版本
+// 读/写
+static void genForRorW(State& st, const Quad& q, int blockIndex) {
+    if (q.op.val == "W") std::cout << "jmp ?write";
+    else std::cout << "jmp ?read";
+    std::cout << "(" << getAddress(st, q.left.val) << ")" << "\n";
+    if (!isUNum(q.left.val)) releaseReg(st, q.left.val, st.liveOut[blockIndex]);
+}
 
-    return out;
+void genCode(State& st) {
+    for (size_t blockIndex = 0; blockIndex < st.basicBlocks.size(); ++blockIndex) {
+        auto& block = st.basicBlocks[blockIndex];
+        if (st.labelFlag[block.front()] == 1) {
+            std::cout << "?" + std::to_string(block.front()) + ":" << "\n";
+        }
+        for (int j : block) {
+            if (isTheta(st.quads[j]))        genForTheta(st, j, (int)blockIndex);
+            else if (isOnlyX(st.quads[j]))   genForOnlyX(st, j, (int)blockIndex);
+            else if (isROrW(st.quads[j]))    genForRorW(st, st.quads[j], (int)blockIndex);
+        }
+        // 出口活跃变量写回（liveOut 为 set，按字典序）
+        for (auto a : st.liveOut[blockIndex]) {
+            if (st.Aval[a].mem.find(a) == st.Aval[a].mem.end()) {
+                if (!st.Aval[a].reg.empty()) {
+                    for (auto reg : st.Aval[a].reg) {
+                        if (st.historyInfo[a].live) {
+                            std::cout << "mov " << getAddress(st, a) << ", " << reg << "\n";
+                        }
+                    }
+                }
+            }
+        }
+        Quad qini = st.quads[block.back()];
+        if (isJ(qini)) {
+            std::cout << "jmp ?" << qini.left.val << "\n";
+        } else if (isJTheta(qini)) {
+            const std::string& x = qini.opnd1.val;
+            const std::string& y = qini.opnd2.val;
+            const std::string& q = qini.left.val;
+            std::string x1 = !st.Aval[x].reg.empty() ? *st.Aval[x].reg.begin() : x;
+            std::string y1 = !st.Aval[y].reg.empty() ? *st.Aval[y].reg.begin() : getAddress(st, y);
+            if (x1 == x) {
+                x1 = getReg(st, block.back());
+                std::cout << "mov " << x1 << ", " << getAddress(st, x) << "\n";
+            }
+            std::cout << "cmp " << x1 << ", " << y1 << "\n";
+            std::cout << mapGet(jThetaMap, qini.op.val) << " ?" << q << "\n";
+        } else if (isJnz(qini)) {
+            const std::string& x = qini.opnd1.val;
+            const std::string& q = qini.left.val;
+            std::string x1 = !st.Aval[x].reg.empty() ? *st.Aval[x].reg.begin() : x;
+            if (x1 == x) {
+                x1 = getReg(st, block.back());
+                std::cout << "mov " << x1 << ", " << getAddress(st, x) << "\n";
+            }
+            std::cout << "cmp " << x1 << ", 0" << "\n";
+            std::cout << "jne" << " ?" << q << "\n";
+        } else if (isEnd(qini)) {
+            std::cout << "halt" << "\n";
+        }
+        st.Rval.clear();
+        st.Aval.clear();
+    }
+}
+
+void run(State& st) {
+    st.labelFlag.assign(st.quads.size(), 0);
+    getBasicBlock(st);
+    computeLiveness(st);
+    genCode(st);
 }

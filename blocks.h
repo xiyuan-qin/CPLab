@@ -1,5 +1,5 @@
 #pragma once
 #include "ir.h"
-#include <vector>
-struct Block { int start, end; };   // [start, end] 闭区间，四元式下标
-std::vector<Block> partition_blocks(Program& prog);
+
+// 划分基本块，填充 st.basicBlocks，并通过 genLable 设置 st.labelFlag。
+void getBasicBlock(State& st);

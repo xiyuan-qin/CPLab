@@ -1,48 +1,64 @@
 #include "blocks.h"
 #include <set>
+#include <algorithm>
 
-namespace {
-bool is_cond_jump(const std::string& op) {
-    // jθ：j 开头且不是单独的 "j"，也不是 jnz 之外…… jnz 也算条件跳转
-    return op.size() >= 2 && op[0] == 'j' && op != "j";
-}
+// 生成标号：标记目标四元式需要建立标号
+static void genLable(State& st, int quad) {
+    if (st.labelFlag[quad] == 0) {
+        st.labelFlag[quad] = 1;
+    }
 }
 
-std::vector<Block> partition_blocks(Program& prog) {
-    auto& Q = prog.quads;
+void getBasicBlock(State& st) {
+    auto& Q = st.quads;
     int n = (int)Q.size();
-    std::set<int> leaders;   // 入口语句集合
-    if (n > 0) leaders.insert(0);
+    std::set<std::vector<int>> blocks;     // 用 set 使基本块按起始下标有序
+    std::vector<int> isEnter(n, 0);        // 标记每条四元式是否是入口语句
+    if (n > 0) isEnter[0] = 1;
 
     for (int i = 0; i < n; ++i) {
-        const std::string& op = Q[i].op;
-        // 跳转目标是入口；条件跳转的下一条也是入口
-        if (is_cond_jump(op)) {            // jnz / j== / j< ...
-            int target = std::stoi(Q[i].result);
-            leaders.insert(target);
-            if (i + 1 < n) leaders.insert(i + 1);
-        } else if (op == "j") {            // 无条件跳转
-            int target = std::stoi(Q[i].result);
-            leaders.insert(target);
-            if (i + 1 < n) leaders.insert(i + 1);
-        } else if (op == "R" || op == "W") {
-            leaders.insert(i);             // R/W 自成入口
+        if (isJTheta(Q[i]) || isJnz(Q[i])) {          // (jθ,-,-,qj) 或 (jnz,-,-,qj)
+            int index = std::stoi(Q[i].left.val);
+            isEnter[index] = 1;
+            if (i < n - 1) isEnter[i + 1] = 1;        // 下一条也是入口
+            genLable(st, index);
+        } else if (isJ(Q[i])) {                       // (j,-,-,qj)
+            int index = std::stoi(Q[i].left.val);
+            isEnter[index] = 1;
+            genLable(st, index);
+        } else if (Q[i].op.val == "End") {
+            isEnter[n - 1] = 1;
+        } else if (isROrW(Q[i])) {
+            isEnter[i] = 1;
         }
     }
 
-    // 按 leaders 切块
-    std::vector<int> ls(leaders.begin(), leaders.end());
-    std::vector<Block> blocks;
-    for (size_t k = 0; k < ls.size(); ++k) {
-        int start = ls[k];
-        int end   = (k + 1 < ls.size()) ? ls[k + 1] - 1 : n - 1;
-        blocks.push_back({start, end});
+    int i = 0;
+    while (i < n) {
+        if (isEnter[i]) {
+            if (i == n - 1) {
+                blocks.insert(std::vector<int>{i});
+            }
+            if (i + 1 == n) break;
+            for (int j = i + 1; j < n; ++j) {
+                if (isEnter[j]) {                     // 遇到下一个入口语句
+                    std::vector<int> temp;
+                    for (int k = i; k < j; ++k) temp.push_back(k);
+                    blocks.insert(temp);
+                    i = j;
+                    break;
+                } else if (Q[j].op.val[0] == 'j' || Q[j].op.val == "ret" || Q[j].op.val == "End") {
+                    // 遇到转移或停机语句
+                    std::vector<int> temp;
+                    for (int k = i; k <= j; ++k) temp.push_back(k);
+                    blocks.insert(temp);
+                    i = j + 1;
+                    break;
+                }
+            }
+        } else {
+            ++i;
+        }
     }
-
-    // 给每条四元式标记块号
-    for (size_t b = 0; b < blocks.size(); ++b)
-        for (int i = blocks[b].start; i <= blocks[b].end; ++i)
-            Q[i].block = (int)b;
-
-    return blocks;
+    st.basicBlocks.assign(blocks.begin(), blocks.end());
 }
